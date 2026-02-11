@@ -1,4 +1,4 @@
-﻿#nullable disable
+#nullable disable
 
 using System.Collections.Generic;
 using Il2Cpp;
@@ -245,62 +245,76 @@ namespace ItemScanner
             Vector3 playerPos = GameManager.GetPlayerTransform().position;
             float radius = Settings.options.scanRadius;
 
-            if (Settings.options.scanGear)
-            {
+            // 分类检测
+            if (Settings.options.scanGear) 
                 ScanGear(playerPos, radius);
-            }
-
-            if (Settings.options.scanContainers)
-            {
+            
+            if (Settings.options.scanContainers) 
                 ScanContainers(playerPos, radius);
-            }
-
-            if (Settings.options.scanPlants)
-            {
+            
+            if (Settings.options.scanPlants) 
                 ScanPlants(playerPos, radius);
-            }
 
+            // 统一排序
             detectedItems.Sort((a, b) => a.distance.CompareTo(b.distance));
         }
 
         private void ScanGear(Vector3 playerPos, float radius)
         {
-            Collider[] gearColliders = Physics.OverlapSphere(playerPos, radius, gearLayerMask);
+            // 物理检测：只寻找半径内 Layer 17 的碰撞体
+            // 使用 QueryTriggerInteraction.Collide 确保即使没有 Rigidbody 的触发器也能被检测到
+            Collider[] gearColliders = Physics.OverlapSphere(playerPos, radius, gearLayerMask, QueryTriggerInteraction.Collide);
             
+            // 用于防止重复添加（一个 GearItem 可能有多个 Collider）
+            HashSet<int> processedInstanceIDs = new HashSet<int>();
+
             foreach (var collider in gearColliders)
             {
-                GearItem gearItem = collider.GetComponent<GearItem>();
-                if (gearItem == null)
+                GearItem gearItem = collider.GetComponentInParent<GearItem>();
+                if (gearItem == null || gearItem.gameObject == null)
                     continue;
 
+                // 检查实例 ID，避免同一个物品因为有多个碰撞体而被添加多次
+                int instanceID = gearItem.gameObject.GetInstanceID();
+                if (processedInstanceIDs.Contains(instanceID))
+                    continue;
+
+                // 基础过滤：必须激活且不在背包内
+                if (!gearItem.gameObject.activeInHierarchy || gearItem.m_InPlayerInventory)
+                    continue;
+
+                // 过滤曾在背包的物品
                 if (!Settings.options.showInventoryItems && gearItem.m_BeenInPlayerInventory)
                     continue;
 
+                // 物品名称过滤 (石头/树枝)
                 bool shouldHide = false;
                 switch (Settings.options.hideItemsFilter)
                 {
                     case HideItemsFilter.Stone:
-                        shouldHide = gearItem.name == "GEAR_Stone";
+                        shouldHide = gearItem.name.Contains("GEAR_Stone");
                         break;
                     case HideItemsFilter.Stick:
-                        shouldHide = gearItem.name == "GEAR_Stick";
+                        shouldHide = gearItem.name.Contains("GEAR_Stick");
                         break;
                     case HideItemsFilter.StoneAndStick:
-                        shouldHide = gearItem.name == "GEAR_Stone" || gearItem.name == "GEAR_Stick";
+                        shouldHide = gearItem.name.Contains("GEAR_Stone") || gearItem.name.Contains("GEAR_Stick");
                         break;
                 }
 
                 if (shouldHide)
                     continue;
 
+                processedInstanceIDs.Add(instanceID);
                 detectedItems.Add(new ItemInfo
                 {
-                    worldPosition = collider.transform.position,
-                    distance = Vector3.Distance(playerPos, collider.transform.position),
+                    worldPosition = gearItem.transform.position,
+                    distance = Vector3.Distance(playerPos, gearItem.transform.position),
                     type = ItemType.Gear
                 });
             }
         }
+
 
         private void ScanContainers(Vector3 playerPos, float radius)
         {
