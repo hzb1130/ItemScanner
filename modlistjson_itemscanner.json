@@ -1,0 +1,52 @@
+{
+  "version": "2",
+  "author": "hzb1130",
+  "authorURL": "https://github.com/hzb1130",
+  "supportURL": "",
+  "mods": [
+    {
+      "type": "mod",
+      "version": "1.0.1",
+      "name": "ItemScanner",
+      "displayName": "",
+      "author": "hzb1130",
+      "previousAuthors": "",
+      "released": "2026-02-10",
+      "updated": "2026-02-11",
+      "downloadURL": "https://github.com/hzb1130/ItemScanner/releases/download/v1.0.1/ItemScanner.dll",
+      "modURL": "https://github.com/hzb1130/ItemScanner",
+      "description": "TLD MOD that scans nearby items, containers, and harvestable plants around the player and displays their locations on screen.",
+      "tags": "",
+      "categories": [
+        "Gameplay",
+        "Quality of Life"
+      ],
+      "gameversion": [],
+      "images": [
+        "https://raw.githubusercontent.com/hzb1130/ItemScanner/main/images/3.1.png"
+      ],
+      "dependencies": [
+        "ModSettings"
+      ],
+      "status": {
+        "working": true,
+        "beta": false,
+        "patchnotes": "",
+        "notes": "",
+        "issues": ""
+      },
+      "testedon": {
+        "tldversion": "2.51",
+        "mlversion": "0.7.2"
+      },
+      "updater": {
+        "enable": true,
+        "downloads": [
+          "https://github.com/hzb1130/ItemScanner/releases/download/v1.0.1/ItemScanner.dll"
+        ]
+      },
+      "aliases": [],
+      "replaces": []
+    }
+  ]
+}
