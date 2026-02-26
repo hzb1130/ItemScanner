@@ -8,6 +8,7 @@ namespace ItemScanner
     public class ItemScanner : MelonMod
     {
         private static int gearLayerMask;
+        private static int allLayerMask = ~0;
 
         private class ItemInfo
         {
@@ -38,10 +39,11 @@ namespace ItemScanner
         private MarkerShape lastPlantShape;
 
         private float lastScanTime = 0f;
+        private bool toggleState = false;
+        private bool lastKeyState = false;
 
         public override void OnInitializeMelon()
         {
-            MelonLogger.Msg("ItemScanner Mod Initialized");
             gearLayerMask = 1 << 17;
             Settings.OnLoad();
         }
@@ -51,7 +53,23 @@ namespace ItemScanner
             if (Settings.options == null)
                 return;
 
-            if (Input.GetKey(Settings.options.scanKey))
+            bool currentKeyState = Input.GetKey(Settings.options.scanKey);
+            bool shouldActivate = false;
+
+            if (Settings.options.scanActivationMode == ScanActivationMode.HoldKey)
+            {
+                shouldActivate = currentKeyState;
+            }
+            else
+            {
+                if (currentKeyState && !lastKeyState)
+                    toggleState = !toggleState;
+                shouldActivate = toggleState;
+            }
+
+            lastKeyState = currentKeyState;
+
+            if (shouldActivate)
             {
                 isDisplaying = true;
 
@@ -85,8 +103,8 @@ namespace ItemScanner
                 return;
 
             bool needRegenerate = false;
-            
-            if (textureCache.Count == 0 || 
+
+            if (textureCache.Count == 0 ||
                 Settings.options.gearMarkerSize != lastGearMarkerSize ||
                 Settings.options.containerMarkerSize != lastContainerMarkerSize ||
                 Settings.options.plantMarkerSize != lastPlantMarkerSize ||
@@ -99,7 +117,7 @@ namespace ItemScanner
             {
                 needRegenerate = true;
             }
-            
+
             if (!needRegenerate && textureCache.Count > 0)
             {
                 foreach (var kvp in textureCache)
@@ -111,7 +129,7 @@ namespace ItemScanner
                     }
                 }
             }
-            
+
             if (needRegenerate)
             {
                 RegenerateTextures();
@@ -160,7 +178,7 @@ namespace ItemScanner
                     if (textureCache.ContainsKey(textureKey))
                     {
                         Texture2D texture = textureCache[textureKey];
-                        
+
                         if (texture != null && texture)
                         {
                             GUI.DrawTexture(
@@ -170,14 +188,16 @@ namespace ItemScanner
 
                             GUIStyle distStyle = new GUIStyle(GUI.skin.label);
                             distStyle.normal.textColor = markerColor;
-                            distStyle.fontSize = 14;
+                            distStyle.fontSize = 20;
                             distStyle.fontStyle = FontStyle.Bold;
                             distStyle.alignment = TextAnchor.MiddleCenter;
+                            distStyle.wordWrap = false;  // 禁止自动换行
 
                             GUI.color = Color.white;
-                            string distText = item.distance.ToString("F1") + "m";
+                            string distText = "[" + item.distance.ToString("F1") + "M]";
+
                             GUI.Label(
-                                new Rect(screenPos.x - 30, screenPos.y + markerSize + 5, 60, 20),
+                                new Rect(screenPos.x - 60, screenPos.y + markerSize + 5, 120, 25),
                                 distText,
                                 distStyle
                             );
@@ -224,14 +244,10 @@ namespace ItemScanner
         {
             switch (shape)
             {
-                case MarkerShape.Circle:
-                    return CreateCircleTexture(size, thickness, color);
-                case MarkerShape.Square:
-                    return CreateSquareTexture(size, thickness, color);
-                case MarkerShape.Triangle:
-                    return CreateTriangleTexture(size, thickness, color);
-                default:
-                    return CreateCircleTexture(size, thickness, color);
+                case MarkerShape.Circle:   return CreateCircleTexture(size, thickness, color);
+                case MarkerShape.Square:   return CreateSquareTexture(size, thickness, color);
+                case MarkerShape.Triangle: return CreateTriangleTexture(size, thickness, color);
+                default:                   return CreateCircleTexture(size, thickness, color);
             }
         }
 
@@ -245,27 +261,21 @@ namespace ItemScanner
             Vector3 playerPos = GameManager.GetPlayerTransform().position;
             float radius = Settings.options.scanRadius;
 
-            // 分类检测
-            if (Settings.options.scanGear) 
+            if (Settings.options.scanGear)
                 ScanGear(playerPos, radius);
-            
-            if (Settings.options.scanContainers) 
+
+            if (Settings.options.scanContainers)
                 ScanContainers(playerPos, radius);
-            
-            if (Settings.options.scanPlants) 
+
+            if (Settings.options.scanPlants)
                 ScanPlants(playerPos, radius);
 
-            // 统一排序
             detectedItems.Sort((a, b) => a.distance.CompareTo(b.distance));
         }
 
         private void ScanGear(Vector3 playerPos, float radius)
         {
-            // 物理检测：只寻找半径内 Layer 17 的碰撞体
-            // 使用 QueryTriggerInteraction.Collide 确保即使没有 Rigidbody 的触发器也能被检测到
             Collider[] gearColliders = Physics.OverlapSphere(playerPos, radius, gearLayerMask, QueryTriggerInteraction.Collide);
-            
-            // 用于防止重复添加（一个 GearItem 可能有多个 Collider）
             HashSet<int> processedInstanceIDs = new HashSet<int>();
 
             foreach (var collider in gearColliders)
@@ -274,20 +284,16 @@ namespace ItemScanner
                 if (gearItem == null || gearItem.gameObject == null)
                     continue;
 
-                // 检查实例 ID，避免同一个物品因为有多个碰撞体而被添加多次
                 int instanceID = gearItem.gameObject.GetInstanceID();
                 if (processedInstanceIDs.Contains(instanceID))
                     continue;
 
-                // 基础过滤：必须激活且不在背包内
                 if (!gearItem.gameObject.activeInHierarchy || gearItem.m_InPlayerInventory)
                     continue;
 
-                // 过滤曾在背包的物品
                 if (!Settings.options.showInventoryItems && gearItem.m_BeenInPlayerInventory)
                     continue;
 
-                // 物品名称过滤 (石头/树枝)
                 bool shouldHide = false;
                 switch (Settings.options.hideItemsFilter)
                 {
@@ -315,40 +321,55 @@ namespace ItemScanner
             }
         }
 
-
         private void ScanContainers(Vector3 playerPos, float radius)
         {
-            Container[] allContainers = UnityEngine.Object.FindObjectsOfType<Container>();
-            
-            foreach (Container container in allContainers)
+            Collider[] colliders = Physics.OverlapSphere(playerPos, radius, allLayerMask, QueryTriggerInteraction.Collide);
+            HashSet<int> processedIDs = new HashSet<int>();
+
+            foreach (var collider in colliders)
             {
+                Container container = collider.GetComponentInParent<Container>();
                 if (container == null || container.gameObject == null)
+                    continue;
+
+                int id = container.gameObject.GetInstanceID();
+                if (processedIDs.Contains(id))
+                    continue;
+
+                if (!container.gameObject.activeInHierarchy)
                     continue;
 
                 if (Settings.options.hideOpenedContainers && container.IsInspected())
                     continue;
 
                 float distance = Vector3.Distance(playerPos, container.transform.position);
-                
-                if (distance <= radius)
+
+                processedIDs.Add(id);
+                detectedItems.Add(new ItemInfo
                 {
-                    detectedItems.Add(new ItemInfo
-                    {
-                        worldPosition = container.transform.position,
-                        distance = distance,
-                        type = ItemType.Container
-                    });
-                }
+                    worldPosition = container.transform.position,
+                    distance = distance,
+                    type = ItemType.Container
+                });
             }
         }
 
         private void ScanPlants(Vector3 playerPos, float radius)
         {
-            Harvestable[] allHarvestables = UnityEngine.Object.FindObjectsOfType<Harvestable>();
-            
-            foreach (Harvestable harvestable in allHarvestables)
+            Collider[] colliders = Physics.OverlapSphere(playerPos, radius, allLayerMask, QueryTriggerInteraction.Collide);
+            HashSet<int> processedIDs = new HashSet<int>();
+
+            foreach (var collider in colliders)
             {
+                Harvestable harvestable = collider.GetComponentInParent<Harvestable>();
                 if (harvestable == null || harvestable.gameObject == null)
+                    continue;
+
+                int id = harvestable.gameObject.GetInstanceID();
+                if (processedIDs.Contains(id))
+                    continue;
+
+                if (!harvestable.gameObject.activeInHierarchy)
                     continue;
 
                 if (harvestable.m_Harvested)
@@ -358,16 +379,14 @@ namespace ItemScanner
                     continue;
 
                 float distance = Vector3.Distance(playerPos, harvestable.transform.position);
-                
-                if (distance <= radius)
+
+                processedIDs.Add(id);
+                detectedItems.Add(new ItemInfo
                 {
-                    detectedItems.Add(new ItemInfo
-                    {
-                        worldPosition = harvestable.transform.position,
-                        distance = distance,
-                        type = ItemType.Plant
-                    });
-                }
+                    worldPosition = harvestable.transform.position,
+                    distance = distance,
+                    type = ItemType.Plant
+                });
             }
         }
 
@@ -428,10 +447,10 @@ namespace ItemScanner
             tex.filterMode = FilterMode.Bilinear;
 
             float centerX = size / 2f;
-            float topY = size * 0.1f;
+            float topY    = size * 0.1f;
             float bottomY = size * 0.9f;
-            float leftX = size * 0.2f;
-            float rightX = size * 0.8f;
+            float leftX   = size * 0.2f;
+            float rightX  = size * 0.8f;
 
             for (int x = 0; x < size; x++)
             {
@@ -461,7 +480,7 @@ namespace ItemScanner
             float C = x2 - x1;
             float D = y2 - y1;
 
-            float dot = A * C + B * D;
+            float dot   = A * C + B * D;
             float lenSq = C * C + D * D;
             float param = -1;
 
