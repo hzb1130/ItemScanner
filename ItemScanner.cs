@@ -439,8 +439,12 @@ namespace ItemScanner
             (Settings.options.showPlantName ? 16 : 0) ^
             (Settings.options.showPlantDistance ? 32 : 0);
 
-            if (hash == lastHash)
-                return;
+            bool texturesMissing =
+    (gearConfig.shape != MarkerShape.None && gearTexture == null) ||
+    (containerConfig.shape != MarkerShape.None && containerTexture == null) ||
+    (plantConfig.shape != MarkerShape.None && plantTexture == null);
+    if (hash == lastHash && !texturesMissing)
+        return;
 
             lastHash = hash;
 
