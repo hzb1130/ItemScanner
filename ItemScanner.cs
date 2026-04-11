@@ -119,6 +119,11 @@ namespace ItemScanner
             if (!isDisplaying || detectedItems.Count == 0)
                 return;
 
+            if (gearTexture == null || containerTexture == null || plantTexture == null)
+            {
+                lastHash = -1; // 强制刷新
+            }
+
             UpdateRenderResourcesIfNeeded();
 
             Camera cam = GetCamera();
