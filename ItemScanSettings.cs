@@ -62,7 +62,7 @@ namespace ItemScanner
 
         [Name("Scan Radius / 扫描半径")]
         [Description("Maximum distance to detect items around the player. / 扫描玩家周围物体的最大距离。")]
-        [Slider(1, 2000)]
+        [Slider(1, 300)]
         public int scanRadius = 25;
 
 
