@@ -1,4 +1,4 @@
-#nullable disable
+﻿#nullable disable
 
 using System.Collections.Generic;
 using Il2Cpp;
@@ -8,13 +8,24 @@ namespace ItemScanner
     public class ItemScanner : MelonMod
     {
         private static int gearLayerMask;
-        private static int allLayerMask = ~0;
+        // private static int allLayerMask = ~0;
 
         private class ItemInfo
         {
             public Vector3 worldPosition;
             public float distance;
             public ItemType type;
+            public string name;
+        }
+
+        private class TypeRenderConfig
+        {
+            public MarkerShape shape;
+            public bool showName;
+            public bool showDistance;
+            public Color color;
+            public int markerSize;
+            public int fontSize;
         }
 
         private enum ItemType
@@ -25,22 +36,26 @@ namespace ItemScanner
         }
 
         private List<ItemInfo> detectedItems = new List<ItemInfo>();
-        private bool isDisplaying = false;
 
-        private Dictionary<string, Texture2D> textureCache = new Dictionary<string, Texture2D>();
-        private int lastGearMarkerSize = -1;
-        private int lastContainerMarkerSize = -1;
-        private int lastPlantMarkerSize = -1;
-        private MarkerColor lastGearColor;
-        private MarkerColor lastContainerColor;
-        private MarkerColor lastPlantColor;
-        private MarkerShape lastGearShape;
-        private MarkerShape lastContainerShape;
-        private MarkerShape lastPlantShape;
+        private TypeRenderConfig gearConfig = new TypeRenderConfig();
+        private TypeRenderConfig containerConfig = new TypeRenderConfig();
+        private TypeRenderConfig plantConfig = new TypeRenderConfig();
+
+        private GUIStyle gearStyle;
+        private GUIStyle containerStyle;
+        private GUIStyle plantStyle;
+
+        private Texture2D gearTexture;
+        private Texture2D containerTexture;
+        private Texture2D plantTexture;
 
         private float lastScanTime = 0f;
         private bool toggleState = false;
         private bool lastKeyState = false;
+        private bool isDisplaying = false;
+        private bool showHint = false;
+
+        private int lastHash = -1;
 
         public override void OnInitializeMelon()
         {
@@ -50,354 +65,451 @@ namespace ItemScanner
 
         public override void OnUpdate()
         {
-            if (Settings.options == null)
+            if (Settings.options == null || !Settings.options.enableScanner)
+            {
+                isDisplaying = false;
+                detectedItems.Clear();
+                showHint = false;
                 return;
+            }
 
-            bool currentKeyState = Input.GetKey(Settings.options.scanKey);
-            bool shouldActivate = false;
+            bool key = Input.GetKey(Settings.options.scanKey);
+            bool active = false;
 
             if (Settings.options.scanActivationMode == ScanActivationMode.HoldKey)
-            {
-                shouldActivate = currentKeyState;
-            }
+                active = key;
             else
             {
-                if (currentKeyState && !lastKeyState)
+                if (key && !lastKeyState)
                     toggleState = !toggleState;
-                shouldActivate = toggleState;
+
+                active = toggleState;
             }
 
-            lastKeyState = currentKeyState;
+            lastKeyState = key;
 
-            if (shouldActivate)
+            if (active)
             {
                 isDisplaying = true;
 
-                float interval = Settings.options.scanInterval;
-                if (Time.time - lastScanTime >= interval)
+                if (Time.time - lastScanTime >= Settings.options.scanInterval)
                 {
                     DetectItems();
                     lastScanTime = Time.time;
                 }
+
+                showHint = Settings.options.showActivationHint;
             }
             else
             {
-                if (isDisplaying)
-                {
-                    isDisplaying = false;
-                    detectedItems.Clear();
-                }
+                isDisplaying = false;
+                detectedItems.Clear();
+                showHint = false;
             }
         }
 
         public override void OnGUI()
         {
-            if (!isDisplaying || detectedItems.Count == 0 || Settings.options == null)
+            if (Settings.options == null)
                 return;
 
-            if (GUI.skin == null)
+            if (showHint && isDisplaying)
+                DrawHint();
+
+            if (!isDisplaying || detectedItems.Count == 0)
                 return;
 
-            Camera activeCamera = GetGameCamera();
-            if (activeCamera == null)
+            UpdateRenderResourcesIfNeeded();
+
+            Camera cam = GetCamera();
+            if (cam == null)
                 return;
-
-            bool needRegenerate = false;
-
-            if (textureCache.Count == 0 ||
-                Settings.options.gearMarkerSize != lastGearMarkerSize ||
-                Settings.options.containerMarkerSize != lastContainerMarkerSize ||
-                Settings.options.plantMarkerSize != lastPlantMarkerSize ||
-                Settings.options.gearColor != lastGearColor ||
-                Settings.options.containerColor != lastContainerColor ||
-                Settings.options.plantColor != lastPlantColor ||
-                Settings.options.gearShape != lastGearShape ||
-                Settings.options.containerShape != lastContainerShape ||
-                Settings.options.plantShape != lastPlantShape)
-            {
-                needRegenerate = true;
-            }
-
-            if (!needRegenerate && textureCache.Count > 0)
-            {
-                foreach (var kvp in textureCache)
-                {
-                    if (kvp.Value == null || !kvp.Value)
-                    {
-                        needRegenerate = true;
-                        break;
-                    }
-                }
-            }
-
-            if (needRegenerate)
-            {
-                RegenerateTextures();
-                lastGearMarkerSize = Settings.options.gearMarkerSize;
-                lastContainerMarkerSize = Settings.options.containerMarkerSize;
-                lastPlantMarkerSize = Settings.options.plantMarkerSize;
-                lastGearColor = Settings.options.gearColor;
-                lastContainerColor = Settings.options.containerColor;
-                lastPlantColor = Settings.options.plantColor;
-                lastGearShape = Settings.options.gearShape;
-                lastContainerShape = Settings.options.containerShape;
-                lastPlantShape = Settings.options.plantShape;
-            }
 
             foreach (var item in detectedItems)
+                DrawItem(item, cam);
+        }
+
+        // ================= 渲染 =================
+
+        private void DrawItem(ItemInfo item, Camera cam)
+        {
+            var config = GetConfig(item.type);
+            if (config == null)
+                return;
+
+            Vector3 pos = cam.WorldToScreenPoint(item.worldPosition);
+            if (pos.z <= 0)
+                return;
+
+            pos.y = Screen.height - pos.y;
+
+            float markerSize = config.markerSize * 2f;
+
+            // ==================== 1. 绘制图形 ====================
+            if (config.shape != MarkerShape.None)
             {
-                Vector3 screenPos = activeCamera.WorldToScreenPoint(item.worldPosition);
+                Texture2D tex = GetTexture(item.type);
 
-                if (screenPos.z > 0)
+                if (tex != null)
                 {
-                    screenPos.y = Screen.height - screenPos.y;
-
-                    Color markerColor = Color.white;
-                    string textureKey = "";
-                    int markerSize = 20;
-
-                    switch (item.type)
-                    {
-                        case ItemType.Gear:
-                            markerColor = Settings.options.GetGearMarkerColor();
-                            markerSize = Settings.options.gearMarkerSize;
-                            textureKey = $"Gear_{Settings.options.gearShape}_{Settings.options.gearColor}_{markerSize}";
-                            break;
-                        case ItemType.Container:
-                            markerColor = Settings.options.GetContainerMarkerColor();
-                            markerSize = Settings.options.containerMarkerSize;
-                            textureKey = $"Container_{Settings.options.containerShape}_{Settings.options.containerColor}_{markerSize}";
-                            break;
-                        case ItemType.Plant:
-                            markerColor = Settings.options.GetPlantMarkerColor();
-                            markerSize = Settings.options.plantMarkerSize;
-                            textureKey = $"Plant_{Settings.options.plantShape}_{Settings.options.plantColor}_{markerSize}";
-                            break;
-                    }
-
-                    if (textureCache.ContainsKey(textureKey))
-                    {
-                        Texture2D texture = textureCache[textureKey];
-
-                        if (texture != null && texture)
-                        {
-                            GUI.DrawTexture(
-                                new Rect(screenPos.x - markerSize, screenPos.y - markerSize, markerSize * 2, markerSize * 2),
-                                texture
-                            );
-
-                            GUIStyle distStyle = new GUIStyle(GUI.skin.label);
-                            distStyle.normal.textColor = markerColor;
-                            distStyle.fontSize = 20;
-                            distStyle.fontStyle = FontStyle.Bold;
-                            distStyle.alignment = TextAnchor.MiddleCenter;
-                            distStyle.wordWrap = false;  // 禁止自动换行
-
-                            GUI.color = Color.white;
-                            string distText = "[" + item.distance.ToString("F1") + "M]";
-
-                            GUI.Label(
-                                new Rect(screenPos.x - 60, screenPos.y + markerSize + 5, 120, 25),
-                                distText,
-                                distStyle
-                            );
-                        }
-                    }
+                    GUI.DrawTexture(new Rect(
+                        pos.x - markerSize / 2,
+                        pos.y - markerSize / 2,
+                        markerSize,
+                        markerSize
+                    ), tex);
                 }
             }
 
-            GUI.color = Color.white;
+            // ==================== 2. 组装文本（同一行） ====================
+            if (!config.showName && !config.showDistance)
+                return;
+
+            string text = "";
+
+            if (config.showName)
+                text += item.name;
+
+            if (config.showDistance)
+            {
+                if (text.Length > 0)
+                    text += " ";
+
+                text += $"[{(int)item.distance}m]";
+            }
+
+            // ==================== 3. 获取样式 ====================
+            GUIStyle style = GetStyle(item.type);
+            if (style == null)
+                return;
+
+            // ==================== 4. 避免遮挡（关键） ====================
+            float textOffsetY = 0f;
+
+            if (config.shape != MarkerShape.None)
+                textOffsetY = markerSize / 2 + 5f;  // 在图形下方
+            else
+                textOffsetY = 0f; // 没图形直接居中
+
+            // ==================== 5. 绘制文本 ====================
+            Vector2 textSize = style.CalcSize(new GUIContent(text));
+
+            GUI.Label(new Rect(
+                pos.x - textSize.x / 2,
+                pos.y + textOffsetY,
+                textSize.x,
+                textSize.y
+            ), text, style);
         }
 
-        private void RegenerateTextures()
-        {
-            textureCache.Clear();
-
-            float thickness = 3f;
-
-            if (Settings.options.scanGear)
-            {
-                int size = Settings.options.gearMarkerSize * 2;
-                string key = $"Gear_{Settings.options.gearShape}_{Settings.options.gearColor}_{Settings.options.gearMarkerSize}";
-                Color color = Settings.options.GetGearMarkerColor();
-                textureCache[key] = CreateShapeTexture(size, thickness, color, Settings.options.gearShape);
-            }
-
-            if (Settings.options.scanContainers)
-            {
-                int size = Settings.options.containerMarkerSize * 2;
-                string key = $"Container_{Settings.options.containerShape}_{Settings.options.containerColor}_{Settings.options.containerMarkerSize}";
-                Color color = Settings.options.GetContainerMarkerColor();
-                textureCache[key] = CreateShapeTexture(size, thickness, color, Settings.options.containerShape);
-            }
-
-            if (Settings.options.scanPlants)
-            {
-                int size = Settings.options.plantMarkerSize * 2;
-                string key = $"Plant_{Settings.options.plantShape}_{Settings.options.plantColor}_{Settings.options.plantMarkerSize}";
-                Color color = Settings.options.GetPlantMarkerColor();
-                textureCache[key] = CreateShapeTexture(size, thickness, color, Settings.options.plantShape);
-            }
-        }
-
-        private Texture2D CreateShapeTexture(int size, float thickness, Color color, MarkerShape shape)
-        {
-            switch (shape)
-            {
-                case MarkerShape.Circle:   return CreateCircleTexture(size, thickness, color);
-                case MarkerShape.Square:   return CreateSquareTexture(size, thickness, color);
-                case MarkerShape.Triangle: return CreateTriangleTexture(size, thickness, color);
-                default:                   return CreateCircleTexture(size, thickness, color);
-            }
-        }
+        // ================= 扫描 =================
 
         private void DetectItems()
         {
             detectedItems.Clear();
 
-            if (GameManager.GetPlayerManagerComponent() == null)
+            var pm = GameManager.GetPlayerManagerComponent();
+            if (pm == null)
                 return;
 
-            Vector3 playerPos = GameManager.GetPlayerTransform().position;
-            float radius = Settings.options.scanRadius;
+            Vector3 p = GameManager.GetPlayerTransform().position;
+            float r = Settings.options.scanRadius;
 
             if (Settings.options.scanGear)
-                ScanGear(playerPos, radius);
+                ScanGear(p, r);
 
             if (Settings.options.scanContainers)
-                ScanContainers(playerPos, radius);
+                ScanContainers(p, r);
 
             if (Settings.options.scanPlants)
-                ScanPlants(playerPos, radius);
+                ScanPlants(p, r);
 
             detectedItems.Sort((a, b) => a.distance.CompareTo(b.distance));
         }
 
         private void ScanGear(Vector3 playerPos, float radius)
         {
-            Collider[] gearColliders = Physics.OverlapSphere(playerPos, radius, gearLayerMask, QueryTriggerInteraction.Collide);
-            HashSet<int> processedInstanceIDs = new HashSet<int>();
+            Collider[] colliders = Physics.OverlapSphere(
+                playerPos,
+                radius,
+                gearLayerMask,
+                QueryTriggerInteraction.Collide
+            );
 
-            foreach (var collider in gearColliders)
+            HashSet<int> processed = new HashSet<int>();
+
+            foreach (var collider in colliders)
             {
                 GearItem gearItem = collider.GetComponentInParent<GearItem>();
                 if (gearItem == null || gearItem.gameObject == null)
                     continue;
 
-                int instanceID = gearItem.gameObject.GetInstanceID();
-                if (processedInstanceIDs.Contains(instanceID))
+                int id = gearItem.gameObject.GetInstanceID();
+                if (processed.Contains(id))
                     continue;
 
-                if (!gearItem.gameObject.activeInHierarchy || gearItem.m_InPlayerInventory)
+                if (!gearItem.gameObject.activeInHierarchy)
                     continue;
 
-                if (!Settings.options.showInventoryItems && gearItem.m_BeenInPlayerInventory)
-                    continue;
+                // ==================== AlwaysShowArrow ====================
+                bool isArrow = gearItem.name.Contains("GEAR_Arrow");
+                bool alwaysShowArrow =
+                    Settings.options.alwaysShowItem == AlwaysShowItem.Arrow && isArrow;
 
-                bool shouldHide = false;
+                // ==================== 已拾取过滤（只被 AlwaysShow 覆盖） ====================
+                if (!alwaysShowArrow)
+                {
+                    if (gearItem.m_InPlayerInventory)
+                        continue;
+
+                    if (!Settings.options.showInventoryItems && gearItem.m_BeenInPlayerInventory)
+                        continue;
+                }
+
+                // ==================== 其他过滤（不会被 AlwaysShow 覆盖） ====================
                 switch (Settings.options.hideItemsFilter)
                 {
                     case HideItemsFilter.Stone:
-                        shouldHide = gearItem.name.Contains("GEAR_Stone");
+                        if (gearItem.name.Contains("GEAR_Stone"))
+                            continue;
                         break;
+
                     case HideItemsFilter.Stick:
-                        shouldHide = gearItem.name.Contains("GEAR_Stick");
+                        if (gearItem.name.Contains("GEAR_Stick"))
+                            continue;
                         break;
+
                     case HideItemsFilter.StoneAndStick:
-                        shouldHide = gearItem.name.Contains("GEAR_Stone") || gearItem.name.Contains("GEAR_Stick");
+                        if (gearItem.name.Contains("GEAR_Stone") ||
+                            gearItem.name.Contains("GEAR_Stick"))
+                            continue;
                         break;
                 }
 
-                if (shouldHide)
-                    continue;
+                // ==================== 添加 ====================
+                Vector3 pos = gearItem.transform.position;
 
-                processedInstanceIDs.Add(instanceID);
+                string displayName = gearItem.name;
+                try
+                {
+                    displayName = gearItem.DisplayName;
+                }
+                catch { }
+
                 detectedItems.Add(new ItemInfo
                 {
-                    worldPosition = gearItem.transform.position,
-                    distance = Vector3.Distance(playerPos, gearItem.transform.position),
-                    type = ItemType.Gear
+                    worldPosition = pos,
+                    distance = Vector3.Distance(playerPos, pos),
+                    type = ItemType.Gear,
+                    name = displayName
                 });
+
+                processed.Add(id);
             }
         }
 
-        private void ScanContainers(Vector3 playerPos, float radius)
+        private void ScanContainers(Vector3 p, float r)
         {
-            Collider[] colliders = Physics.OverlapSphere(playerPos, radius, allLayerMask, QueryTriggerInteraction.Collide);
-            HashSet<int> processedIDs = new HashSet<int>();
+            var cols = Physics.OverlapSphere(p, r);
+            HashSet<int> ids = new HashSet<int>();
 
-            foreach (var collider in colliders)
+            foreach (var c in cols)
             {
-                Container container = collider.GetComponentInParent<Container>();
-                if (container == null || container.gameObject == null)
+                var obj = c.GetComponentInParent<Container>();
+                if (obj == null || !obj.gameObject.activeInHierarchy)
                     continue;
 
-                int id = container.gameObject.GetInstanceID();
-                if (processedIDs.Contains(id))
+                int id = obj.gameObject.GetInstanceID();
+                if (ids.Contains(id))
                     continue;
 
-                if (!container.gameObject.activeInHierarchy)
+                if (Settings.options.hideOpenedContainers && obj.IsInspected())
                     continue;
 
-                if (Settings.options.hideOpenedContainers && container.IsInspected())
-                    continue;
+                Vector3 pos = obj.transform.position;
 
-                float distance = Vector3.Distance(playerPos, container.transform.position);
-
-                processedIDs.Add(id);
                 detectedItems.Add(new ItemInfo
                 {
-                    worldPosition = container.transform.position,
-                    distance = distance,
-                    type = ItemType.Container
+                    worldPosition = pos,
+                    distance = Vector3.Distance(p, pos),
+                    type = ItemType.Container,
+                    name = obj.LocalizedDisplayName.Text()
                 });
+
+                ids.Add(id);
             }
         }
 
-        private void ScanPlants(Vector3 playerPos, float radius)
+        private void ScanPlants(Vector3 p, float r)
         {
-            Collider[] colliders = Physics.OverlapSphere(playerPos, radius, allLayerMask, QueryTriggerInteraction.Collide);
-            HashSet<int> processedIDs = new HashSet<int>();
+            var cols = Physics.OverlapSphere(p, r);
+            HashSet<int> ids = new HashSet<int>();
 
-            foreach (var collider in colliders)
+            foreach (var c in cols)
             {
-                Harvestable harvestable = collider.GetComponentInParent<Harvestable>();
-                if (harvestable == null || harvestable.gameObject == null)
+                var obj = c.GetComponentInParent<Harvestable>();
+                if (obj == null || !obj.gameObject.activeInHierarchy)
                     continue;
 
-                int id = harvestable.gameObject.GetInstanceID();
-                if (processedIDs.Contains(id))
+                int id = obj.gameObject.GetInstanceID();
+                if (ids.Contains(id))
                     continue;
 
-                if (!harvestable.gameObject.activeInHierarchy)
+                // 过滤：已采集 or 非植物
+                if (obj.m_Harvested || !obj.RegisterAsPlantsHaversted)
                     continue;
 
-                if (harvestable.m_Harvested)
-                    continue;
+                Vector3 pos = obj.transform.position;
 
-                if (!harvestable.RegisterAsPlantsHaversted)
-                    continue;
+                // ==================== 获取显示名称（核心修改） ====================
+                string displayName = obj.name;
 
-                float distance = Vector3.Distance(playerPos, harvestable.transform.position);
+                try
+                {
+                    if (obj.m_GearPrefab != null)
+                    {
+                        GearItem gear = obj.m_GearPrefab.GetComponent<GearItem>();
+                        if (gear != null && !string.IsNullOrEmpty(gear.DisplayName))
+                        {
+                            displayName = gear.DisplayName;
+                        }
+                    }
+                }
+                catch { }
 
-                processedIDs.Add(id);
+                // ==================== 添加 ====================
                 detectedItems.Add(new ItemInfo
                 {
-                    worldPosition = harvestable.transform.position,
-                    distance = distance,
-                    type = ItemType.Plant
+                    worldPosition = pos,
+                    distance = Vector3.Distance(p, pos),
+                    type = ItemType.Plant,
+                    name = displayName
                 });
+
+                ids.Add(id);
             }
         }
 
+        // ================= 配置 =================
+
+        private TypeRenderConfig GetConfig(ItemType type)
+        {
+            return type == ItemType.Gear ? gearConfig :
+                   type == ItemType.Container ? containerConfig :
+                   plantConfig;
+        }
+
+        private Texture2D GetTexture(ItemType type)
+        {
+            return type == ItemType.Gear ? gearTexture :
+                   type == ItemType.Container ? containerTexture :
+                   plantTexture;
+        }
+
+        private GUIStyle GetStyle(ItemType type)
+        {
+            return type == ItemType.Gear ? gearStyle :
+                   type == ItemType.Container ? containerStyle :
+                   plantStyle;
+        }
+
+        private void UpdateRenderResourcesIfNeeded()
+        {
+            int hash =
+            Settings.options.gearMarkerSize ^
+            Settings.options.containerMarkerSize ^
+            Settings.options.plantMarkerSize ^
+
+            (int)Settings.options.gearColor ^
+            (int)Settings.options.containerColor ^
+            (int)Settings.options.plantColor ^
+
+            (int)Settings.options.gearShape ^
+            (int)Settings.options.containerShape ^
+            (int)Settings.options.plantShape ^
+
+            Settings.options.gearFontSize ^
+            Settings.options.containerFontSize ^
+            Settings.options.plantFontSize ^
+
+            (Settings.options.showGearName ? 1 : 0) ^
+            (Settings.options.showGearDistance ? 2 : 0) ^
+            (Settings.options.showContainerName ? 4 : 0) ^
+            (Settings.options.showContainerDistance ? 8 : 0) ^
+            (Settings.options.showPlantName ? 16 : 0) ^
+            (Settings.options.showPlantDistance ? 32 : 0);
+
+            if (hash == lastHash)
+                return;
+
+            lastHash = hash;
+
+            BuildConfig(gearConfig, Settings.options.gearShape,
+                Settings.options.showGearName, Settings.options.showGearDistance,
+                Settings.options.gearColor, Settings.options.gearMarkerSize,
+                Settings.options.gearFontSize);
+
+            BuildConfig(containerConfig, Settings.options.containerShape,
+                Settings.options.showContainerName, Settings.options.showContainerDistance,
+                Settings.options.containerColor, Settings.options.containerMarkerSize,
+                Settings.options.containerFontSize);
+
+            BuildConfig(plantConfig, Settings.options.plantShape,
+                Settings.options.showPlantName, Settings.options.showPlantDistance,
+                Settings.options.plantColor, Settings.options.plantMarkerSize,
+                Settings.options.plantFontSize);
+
+            RegenerateTextures();
+            RegenerateStyles();
+        }
+
+        private void BuildConfig(TypeRenderConfig cfg, MarkerShape shape, bool name, bool dist,
+            MarkerColor color, int size, int font)
+        {
+            cfg.shape = shape;
+            cfg.showName = name;
+            cfg.showDistance = dist;
+            cfg.color = Settings.options.GetColorFromEnum(color);
+            cfg.markerSize = size;
+            cfg.fontSize = font;
+        }
+
+        private void RegenerateTextures()
+        {
+            gearTexture = CreateShapeTexture(gearConfig);
+            containerTexture = CreateShapeTexture(containerConfig);
+            plantTexture = CreateShapeTexture(plantConfig);
+        }
+        private Texture2D CreateShapeTexture(TypeRenderConfig cfg)
+        {
+            if (cfg.shape == MarkerShape.None)
+                return null;
+
+            int size = cfg.markerSize * 2;
+            float thickness = 3f;
+
+            switch (cfg.shape)
+            {
+                case MarkerShape.Circle:
+                    return CreateCircleTexture(size, thickness, cfg.color);
+
+                case MarkerShape.Square:
+                    return CreateSquareTexture(size, thickness, cfg.color);
+
+                case MarkerShape.Triangle:
+                    return CreateTriangleTexture(size, thickness, cfg.color);
+
+                default:
+                    return null;
+            }
+        }
         private Texture2D CreateCircleTexture(int size, float thickness, Color color)
         {
-            Texture2D tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
-            tex.filterMode = FilterMode.Bilinear;
+            Texture2D tex = new Texture2D(size, size);
 
             float center = size / 2f;
-            float outerRadius = size / 2f - 1f;
-            float innerRadius = outerRadius - thickness;
+            float outer = center - 1f;
+            float inner = outer - thickness;
 
             for (int x = 0; x < size; x++)
             {
@@ -405,67 +517,64 @@ namespace ItemScanner
                 {
                     float dist = Mathf.Sqrt((x - center) * (x - center) + (y - center) * (y - center));
 
-                    if (dist >= innerRadius && dist <= outerRadius)
-                        tex.SetPixel(x, y, color);
-                    else
-                        tex.SetPixel(x, y, Color.clear);
+                    tex.SetPixel(x, y,
+                        (dist >= inner && dist <= outer) ? color : Color.clear);
                 }
             }
 
             tex.Apply();
             return tex;
         }
-
         private Texture2D CreateSquareTexture(int size, float thickness, Color color)
         {
-            Texture2D tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
-            tex.filterMode = FilterMode.Bilinear;
-
+            Texture2D tex = new Texture2D(size, size);
             int border = (int)thickness;
 
             for (int x = 0; x < size; x++)
             {
                 for (int y = 0; y < size; y++)
                 {
-                    bool isEdge = (x < border || x >= size - border || y < border || y >= size - border);
-                    bool isInner = (x >= border && x < size - border && y >= border && y < size - border);
+                    bool edge =
+                        x < border || x >= size - border ||
+                        y < border || y >= size - border;
 
-                    if (isEdge && !isInner)
-                        tex.SetPixel(x, y, color);
-                    else
-                        tex.SetPixel(x, y, Color.clear);
+                    tex.SetPixel(x, y, edge ? color : Color.clear);
                 }
             }
 
             tex.Apply();
             return tex;
         }
-
         private Texture2D CreateTriangleTexture(int size, float thickness, Color color)
         {
-            Texture2D tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
+            Texture2D tex = new Texture2D(size, size);
             tex.filterMode = FilterMode.Bilinear;
 
-            float centerX = size / 2f;
-            float topY    = size * 0.1f;
-            float bottomY = size * 0.9f;
-            float leftX   = size * 0.2f;
-            float rightX  = size * 0.8f;
+            float margin = size * 0.1f;
+
+            // 倒置三角形：底边在上方，顶点在底部
+            Vector2 bottomLeft  = new Vector2(margin, size - margin);
+            Vector2 bottomRight = new Vector2(size - margin, size - margin);
+
+            float side = bottomRight.x - bottomLeft.x;
+            float height = side * 0.866f;  
+
+            Vector2 top = new Vector2(size / 2f, size - margin - height);
 
             for (int x = 0; x < size; x++)
             {
                 for (int y = 0; y < size; y++)
                 {
-                    float d1 = DistanceToLine(x, y, centerX, topY, leftX, bottomY);
-                    float d2 = DistanceToLine(x, y, leftX, bottomY, rightX, bottomY);
-                    float d3 = DistanceToLine(x, y, rightX, bottomY, centerX, topY);
+                    Vector2 p = new Vector2(x, y);
+
+                    float d1 = DistanceToSegment(p, bottomLeft, bottomRight);
+                    float d2 = DistanceToSegment(p, bottomRight, top); 
+                    float d3 = DistanceToSegment(p, top, bottomLeft);
 
                     float minDist = Mathf.Min(d1, Mathf.Min(d2, d3));
 
-                    if (minDist <= thickness)
-                        tex.SetPixel(x, y, color);
-                    else
-                        tex.SetPixel(x, y, Color.clear);
+                    tex.SetPixel(x, y,
+                        (minDist <= thickness) ? color : Color.clear);
                 }
             }
 
@@ -473,82 +582,56 @@ namespace ItemScanner
             return tex;
         }
 
-        private float DistanceToLine(float px, float py, float x1, float y1, float x2, float y2)
+        private float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b)
         {
-            float A = px - x1;
-            float B = py - y1;
-            float C = x2 - x1;
-            float D = y2 - y1;
-
-            float dot   = A * C + B * D;
-            float lenSq = C * C + D * D;
-            float param = -1;
-
-            if (lenSq != 0)
-                param = dot / lenSq;
-
-            float xx, yy;
-
-            if (param < 0)
-            {
-                xx = x1;
-                yy = y1;
-            }
-            else if (param > 1)
-            {
-                xx = x2;
-                yy = y2;
-            }
-            else
-            {
-                xx = x1 + param * C;
-                yy = y1 + param * D;
-            }
-
-            float dx = px - xx;
-            float dy = py - yy;
-            return Mathf.Sqrt(dx * dx + dy * dy);
+            Vector2 ab = b - a;
+            float t = Vector2.Dot(p - a, ab) / ab.sqrMagnitude;
+            t = Mathf.Clamp01(t);
+            Vector2 closest = a + t * ab;
+            return Vector2.Distance(p, closest);
         }
 
-        private Camera GetGameCamera()
+        private void RegenerateStyles()
+        {
+            gearStyle = CreateStyle(gearConfig);
+            containerStyle = CreateStyle(containerConfig);
+            plantStyle = CreateStyle(plantConfig);
+        }
+
+        private GUIStyle CreateStyle(TypeRenderConfig cfg)
+        {
+            var s = new GUIStyle(GUI.skin.label);
+            s.wordWrap = false;   // 必须
+            s.clipping = TextClipping.Overflow; // 防止裁剪
+            s.normal.textColor = cfg.color;
+            s.fontSize = cfg.fontSize;
+            s.alignment = TextAnchor.MiddleCenter;
+            return s;
+        }
+
+        private void DrawHint()
+        {
+            float width = 140f;
+            float height = 24f;
+            float margin = 10f;
+
+            Rect rect = new Rect(
+                Screen.width - width - margin,
+                Screen.height - height - margin,
+                width,
+                height
+            );
+
+            GUI.Box(rect, "Scanner Active");
+        }
+
+        private Camera GetCamera()
         {
             if (Camera.main != null)
                 return Camera.main;
 
-            try
-            {
-                Camera cam = GameManager.GetMainCamera();
-                if (cam != null)
-                    return cam;
-            }
-            catch { }
-
-            try
-            {
-                PlayerManager pm = GameManager.GetPlayerManagerComponent();
-                if (pm != null)
-                {
-                    Camera cam = pm.GetComponentInChildren<Camera>();
-                    if (cam != null && cam.enabled)
-                        return cam;
-                }
-            }
-            catch { }
-
-            Camera[] cameras = Camera.allCameras;
-            foreach (Camera cam in cameras)
-            {
-                if (cam != null && cam.enabled && cam.gameObject.activeInHierarchy)
-                {
-                    if (cam.depth >= 0)
-                        return cam;
-                }
-            }
-
-            if (cameras.Length > 0)
-                return cameras[0];
-
-            return null;
+            var cams = Camera.allCameras;
+            return cams.Length > 0 ? cams[0] : null;
         }
     }
 }
