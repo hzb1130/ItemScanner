@@ -247,7 +247,8 @@ namespace ItemScanner
         public static void OnLoad()
         {
             options = new ItemScannerSettings();
-            options.AddToModSettings("Item Scanner");
+            options.AddToModSettings("Item Scanner v1.0.4");
+            // options.AddToModSettings("物品扫描器v1.0.4");
             options.RefreshFields();
         }
     }

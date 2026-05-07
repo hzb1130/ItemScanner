@@ -2,7 +2,7 @@
 
 using System.Collections.Generic;
 using Il2Cpp;
-
+using UnityEngine;
 namespace ItemScanner
 {
     public class ItemScanner : MelonMod
@@ -44,18 +44,16 @@ namespace ItemScanner
         private GUIStyle gearStyle;
         private GUIStyle containerStyle;
         private GUIStyle plantStyle;
-
         private Texture2D gearTexture;
         private Texture2D containerTexture;
         private Texture2D plantTexture;
-
         private float lastScanTime = 0f;
         private bool toggleState = false;
         private bool lastKeyState = false;
         private bool isDisplaying = false;
         private bool showHint = false;
-
-        private int lastHash = -1;
+        private bool _needsRegenerateStyles = false;
+        private int _lastResourceHash = -1;
 
         public override void OnInitializeMelon()
         {
@@ -119,7 +117,11 @@ namespace ItemScanner
             if (!isDisplaying || detectedItems.Count == 0)
                 return;
 
-            UpdateRenderResourcesIfNeeded();
+            if (_needsRegenerateStyles)
+            {
+                RegenerateStyles();
+                _needsRegenerateStyles = false;
+            }
 
             Camera cam = GetCamera();
             if (cam == null)
@@ -127,6 +129,7 @@ namespace ItemScanner
 
             foreach (var item in detectedItems)
                 DrawItem(item, cam);
+                
         }
 
         // ================= 渲染 =================
@@ -225,6 +228,8 @@ namespace ItemScanner
                 ScanPlants(p, r);
 
             detectedItems.Sort((a, b) => a.distance.CompareTo(b.distance));
+            UpdateTexturesIfNeeded();
+            
         }
 
         private void ScanGear(Vector3 playerPos, float radius)
@@ -237,7 +242,7 @@ namespace ItemScanner
             );
 
             HashSet<int> processed = new HashSet<int>();
-
+            
             foreach (var collider in colliders)
             {
                 GearItem gearItem = collider.GetComponentInParent<GearItem>();
@@ -307,6 +312,7 @@ namespace ItemScanner
                 processed.Add(id);
             }
         }
+
 
         private void ScanContainers(Vector3 p, float r)
         {
@@ -412,42 +418,42 @@ namespace ItemScanner
                    type == ItemType.Container ? containerStyle :
                    plantStyle;
         }
-
-        private void UpdateRenderResourcesIfNeeded()
+        private void UpdateTexturesIfNeeded()
         {
+            // 计算 hash（不变则不重建）
             int hash =
-            Settings.options.gearMarkerSize ^
-            Settings.options.containerMarkerSize ^
-            Settings.options.plantMarkerSize ^
-
-            (int)Settings.options.gearColor ^
-            (int)Settings.options.containerColor ^
-            (int)Settings.options.plantColor ^
-
-            (int)Settings.options.gearShape ^
-            (int)Settings.options.containerShape ^
-            (int)Settings.options.plantShape ^
-
-            Settings.options.gearFontSize ^
-            Settings.options.containerFontSize ^
-            Settings.options.plantFontSize ^
-
-            (Settings.options.showGearName ? 1 : 0) ^
-            (Settings.options.showGearDistance ? 2 : 0) ^
-            (Settings.options.showContainerName ? 4 : 0) ^
-            (Settings.options.showContainerDistance ? 8 : 0) ^
-            (Settings.options.showPlantName ? 16 : 0) ^
-            (Settings.options.showPlantDistance ? 32 : 0);
+                Settings.options.gearMarkerSize ^
+                Settings.options.containerMarkerSize ^
+                Settings.options.plantMarkerSize ^
+                (int)Settings.options.gearColor ^
+                (int)Settings.options.containerColor ^
+                (int)Settings.options.plantColor ^
+                (int)Settings.options.gearShape ^
+                (int)Settings.options.containerShape ^
+                (int)Settings.options.plantShape ^
+                Settings.options.gearFontSize ^
+                Settings.options.containerFontSize ^
+                Settings.options.plantFontSize ^
+                (Settings.options.showGearName ? 1 : 0) ^
+                (Settings.options.showGearDistance ? 2 : 0) ^
+                (Settings.options.showContainerName ? 4 : 0) ^
+                (Settings.options.showContainerDistance ? 8 : 0) ^
+                (Settings.options.showPlantName ? 16 : 0) ^
+                (Settings.options.showPlantDistance ? 32 : 0);
 
             bool texturesMissing =
-    (gearConfig.shape != MarkerShape.None && gearTexture == null) ||
-    (containerConfig.shape != MarkerShape.None && containerTexture == null) ||
-    (plantConfig.shape != MarkerShape.None && plantTexture == null);
-    if (hash == lastHash && !texturesMissing)
-        return;
+                (gearConfig.shape != MarkerShape.None && gearTexture == null) ||
+                (containerConfig.shape != MarkerShape.None && containerTexture == null) ||
+                (plantConfig.shape != MarkerShape.None && plantTexture == null);
 
-            lastHash = hash;
+            if (hash == _lastResourceHash && !texturesMissing)
+                return;
 
+            // 需要重建
+            _lastResourceHash = hash;
+            _needsRegenerateStyles = true;
+
+            // 更新配置
             BuildConfig(gearConfig, Settings.options.gearShape,
                 Settings.options.showGearName, Settings.options.showGearDistance,
                 Settings.options.gearColor, Settings.options.gearMarkerSize,
@@ -463,9 +469,10 @@ namespace ItemScanner
                 Settings.options.plantColor, Settings.options.plantMarkerSize,
                 Settings.options.plantFontSize);
 
+            // 安全重建纹理
             RegenerateTextures();
-            RegenerateStyles();
         }
+        
 
         private void BuildConfig(TypeRenderConfig cfg, MarkerShape shape, bool name, bool dist,
             MarkerColor color, int size, int font)
@@ -627,15 +634,22 @@ namespace ItemScanner
             );
 
             GUI.Box(rect, "Scanner Active");
+            // GUI.Box(rect, "扫描中……");
+
         }
 
         private Camera GetCamera()
         {
-            if (Camera.main != null)
-                return Camera.main;
-
-            var cams = Camera.allCameras;
-            return cams.Length > 0 ? cams[0] : null;
+            Camera[] allCameras = Camera.allCameras;
+            foreach (Camera cam in allCameras)
+            {
+                if (cam != null && cam.enabled && cam.gameObject.activeInHierarchy)
+                {
+                    if (cam.name == "CameraGlobalRT")
+                        return cam;
+                }
+            }
+            return null;
         }
     }
 }
