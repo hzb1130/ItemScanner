@@ -70,7 +70,6 @@ namespace ItemScanner
                 showHint = false;
                 return;
             }
-
             bool key = Input.GetKey(Settings.options.scanKey);
             bool active = false;
 
@@ -105,7 +104,6 @@ namespace ItemScanner
                 showHint = false;
             }
         }
-
         public override void OnGUI()
         {
             if (Settings.options == null)
@@ -322,7 +320,7 @@ namespace ItemScanner
             foreach (var c in cols)
             {
                 var obj = c.GetComponentInParent<Container>();
-                if (obj == null || !obj.gameObject.activeInHierarchy)
+                if (obj == null || !obj.gameObject.activeInHierarchy || !obj.enabled)
                     continue;
 
                 int id = obj.gameObject.GetInstanceID();
